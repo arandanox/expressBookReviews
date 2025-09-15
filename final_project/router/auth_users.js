@@ -3,119 +3,69 @@ const jwt = require('jsonwebtoken');
 let books = require("./booksdb.js");
 const regd_users = express.Router();
 
-// In-memory users store - shared with general.js via require('./auth_users.js').users
 let users = [];
 
-/**
- * isValid - basic username validation
- * Returns true if username is a non-empty string
- */
-const isValid = (username) => {
-  return typeof username === 'string' && username.trim().length > 0;
-};
+// Check if username is valid
+const isValid = (username) => users.some(u => u.username === username);
 
-/**
- * authenticatedUser - checks credentials against users array
- */
-const authenticatedUser = (username, password) => {
-  return users.some(u => u.username === username && u.password === password);
-};
+// Authenticate user
+const authenticatedUser = (username, password) =>
+    users.some(u => u.username === username && u.password === password);
 
-/**
- * Task 7 - Login endpoint for registered users
- * POST /customer/login
- * Body: { username, password }
- * Returns: JWT token (signed with secret 'access')
- */
+// Register
+regd_users.post("/register", (req, res) => {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ message: "Username and password required" });
+    if (isValid(username)) return res.status(400).json({ message: "Username already exists" });
+
+    users.push({ username, password });
+    return res.status(200).json({ message: "User registered successfully" });
+});
+
+// Login
 regd_users.post("/login", (req, res) => {
-  const { username, password } = req.body || {};
+    const { username, password } = req.body;
+    if (!authenticatedUser(username, password)) return res.status(401).json({ message: "Invalid credentials" });
 
-  if (!username || !password) {
-    return res.status(400).json({ message: "Username and password are required" });
-  }
-
-  if (!authenticatedUser(username, password)) {
-    return res.status(401).json({ message: "Invalid username or password" });
-  }
-
-  // Sign JWT - secret 'access' and expiry (e.g., 1h)
-  const token = jwt.sign({ username }, 'access', { expiresIn: '1h' });
-
-  return res.status(200).json({ message: "Logged in successfully", token });
+    const token = jwt.sign({ username }, "contrasena", { expiresIn: "1h" });
+    return res.status(200).json({ message: "Logged in", token });
 });
 
-/**
- * Helper to extract token from Authorization header.
- * Accepts: "Bearer <token>" or raw token.
- */
-function getTokenFromHeader(req) {
-  const authHeader = req.headers['authorization'] || req.headers['Authorization'];
-  if (!authHeader) return null;
-  if (authHeader.startsWith('Bearer ')) return authHeader.split(' ')[1];
-  return authHeader;
-}
+// Middleware for auth
+regd_users.use("/auth/*", (req, res, next) => {
+    const token = req.headers["authorization"];
+    if (!token) return res.status(401).json({ message: "Token required" });
 
-/**
- * Task 8 - Add or modify a book review
- * PUT /customer/auth/review/:isbn?review=...
- * The username is retrieved from the JWT (in Authorization header).
- */
+    jwt.verify(token, "secretKey", (err, decoded) => {
+        if (err) return res.status(401).json({ message: "Invalid token" });
+        req.username = decoded.username;
+        next();
+    });
+});
+
+// Add or modify book review
 regd_users.put("/auth/review/:isbn", (req, res) => {
-  const isbn = req.params.isbn;
-  const reviewText = req.query.review;
+    const isbn = req.params.isbn;
+    const review = req.query.review;
+    const username = req.query.username || "alex"; // <- usa un usuario de prueba
+    if (!books[isbn]) return res.status(404).json({ message: "Book not found" });
+    if (!review) return res.status(400).json({ message: "Review required" });
 
-  if (!isbn) return res.status(400).json({ message: "ISBN required" });
-  if (!reviewText) return res.status(400).json({ message: "Review is required as a query parameter (?review=...)" });
-
-  const book = books[isbn];
-  if (!book) return res.status(404).json({ message: "Book not found" });
-
-  const token = getTokenFromHeader(req);
-  if (!token) return res.status(401).json({ message: "Authorization token required" });
-
-  try {
-    const decoded = jwt.verify(token, 'access');
-    const username = decoded.username;
-
-    // Create reviews object if not present
-    if (!book.reviews) book.reviews = {};
-
-    // Add or update review for this username
-    book.reviews[username] = reviewText;
-
-    return res.status(200).json({ message: "Review added/updated", reviews: book.reviews });
-  } catch (err) {
-    return res.status(401).json({ message: "Invalid or expired token" });
-  }
+    books[isbn].reviews[username] = review;
+    return res.status(200).json({ message: "Review added/updated", reviews: books[isbn].reviews });
 });
 
-/**
- * Task 9 - Delete a book review for the logged-in user
- * DELETE /customer/auth/review/:isbn
- */
+
+// Delete book review
 regd_users.delete("/auth/review/:isbn", (req, res) => {
-  const isbn = req.params.isbn;
-  if (!isbn) return res.status(400).json({ message: "ISBN required" });
+    const isbn = req.params.isbn;
+    if (!books[isbn]) return res.status(404).json({ message: "Book not found" });
 
-  const book = books[isbn];
-  if (!book) return res.status(404).json({ message: "Book not found" });
-
-  const token = getTokenFromHeader(req);
-  if (!token) return res.status(401).json({ message: "Authorization token required" });
-
-  try {
-    const decoded = jwt.verify(token, 'access');
-    const username = decoded.username;
-
-    if (!book.reviews || !book.reviews[username]) {
-      return res.status(404).json({ message: "Review by this user not found" });
+    if (books[isbn].reviews[req.username]) {
+        delete books[isbn].reviews[req.username];
+        return res.status(200).json({ message: "Review deleted", reviews: books[isbn].reviews });
     }
-
-    delete book.reviews[username];
-    return res.status(200).json({ message: "Review deleted", reviews: book.reviews });
-  } catch (err) {
-    return res.status(401).json({ message: "Invalid or expired token" });
-  }
+    return res.status(404).json({ message: "Review by user not found" });
 });
 
 module.exports.authenticated = regd_users;
